@@ -64,6 +64,10 @@ textarea{min-height:90px;resize:vertical}
 .ph .acts button{flex:1;font-size:11px;padding:3px 0;border:1px solid var(--line);background:var(--surface);border-radius:6px}
 .ph .main{position:absolute;top:4px;left:4px;background:var(--accent);color:var(--accent-ink);font-size:10px;font-weight:600;padding:1px 6px;border-radius:999px}
 .crow{display:flex;gap:8px;align-items:center}
+details.ord{border-bottom:1px solid var(--line);padding-block:10px}
+details.ord summary{cursor:pointer;overflow-wrap:anywhere}
+.ordbody{display:flex;flex-direction:column;gap:12px;padding-top:12px}
+.ordbody a{color:var(--accent)}
 .setup{background:var(--bad-bg);color:var(--bad);border-radius:12px;padding:16px;max-width:560px;margin:10vh auto}
 </style>
 </head>
@@ -85,9 +89,10 @@ async function start(){
   const app=A.initializeApp(cfg),auth=AU.getAuth(app),db=FS.getFirestore(app);
   const CATS=["Tote","Transversal","Bucket","Clutch","Mochila"];
   const TAGS=["","Novo","Oferta","Mais vendida","Últimas unidades"];
-  const S={user:null,tab:"produtos",products:[],loaded:false,form:null,msg:null,confirmDel:null,settings:{freeFrom:199,shipping:19.9,pixOff:5,installments:10,whatsapp:""}};
+  const STATUSES=["Aguardando pagamento","Pagamento confirmado","Em separação","Enviado","Entregue","Cancelado"];
+  const S={orders:[],ordersErr:false,openOrder:null,user:null,tab:"produtos",products:[],loaded:false,form:null,msg:null,confirmDel:null,settings:{freeFrom:199,shipping:19.9,pixOff:5,installments:10,whatsapp:""}};
 
-  AU.onAuthStateChanged(auth,async u=>{S.user=u;if(u){await loadAll()}render()});
+  AU.onAuthStateChanged(auth,async u=>{S.user=u;if(u){await loadAll();await loadOrders()}render()});
 
   async function loadAll(){
     try{
@@ -99,12 +104,23 @@ async function start(){
     }catch(e){S.msg={t:"bad",x:"Não consegui carregar os dados. Confira as regras do Firestore. ("+esc(e.code||e.message)+")"}}
   }
 
+  async function loadOrders(){
+    try{
+      const snap=await FS.getDocs(FS.collection(db,"pedidos"));
+      S.orders=snap.docs.map(d=>({...d.data(),code:d.id})).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));S.ordersErr=false;
+    }catch(e){S.ordersErr=true}
+  }
+  const newCount=()=>S.orders.filter(o=>o.status==="Aguardando pagamento").length;
+  const trackLink=code=>new URL("index.html",location.href).href+"?pedido="+encodeURIComponent(code);
+  const fmtCode=c=>String(c).slice(0,5)+"-"+String(c).slice(5);
+  const waNum=t=>{const d=String(t||"").replace(/\D/g,"");return d.length>=12?d:"55"+d};
+
   function render(){
     if(!S.user){return renderLogin()}
     let h='<div class="top"><div><h1>Painel da loja</h1><span class="muted">'+esc(S.user.email)+'</span></div><div class="actions"><a class="btn line sm" href="index.html" style="text-decoration:none;display:inline-block">Ver a loja</a><button class="btn line sm" id="out">Sair</button></div></div>';
-    h+='<div class="tabs"><button class="tab" data-tab="produtos" aria-pressed="'+(S.tab==="produtos")+'">Produtos</button><button class="tab" data-tab="config" aria-pressed="'+(S.tab==="config")+'">Configurações</button></div>';
+    h+='<div class="tabs"><button class="tab" data-tab="produtos" aria-pressed="'+(S.tab==="produtos")+'">Produtos</button><button class="tab" data-tab="pedidos" aria-pressed="'+(S.tab==="pedidos")+'">Pedidos'+(newCount()?' ('+newCount()+' novos)':'')+'</button><button class="tab" data-tab="config" aria-pressed="'+(S.tab==="config")+'">Configurações</button></div>';
     if(S.msg)h+='<div class="msg '+S.msg.t+'" role="status" style="margin-bottom:12px">'+S.msg.x+'</div>';
-    h+=S.tab==="config"?settingsHtml():(S.form?formHtml():listHtml());
+    h+=S.tab==="config"?settingsHtml():S.tab==="pedidos"?ordersHtml():(S.form?formHtml():listHtml());
     root.innerHTML=h;bind();
     if(S.form){renderPhotos();renderColors()}
   }
@@ -176,6 +192,36 @@ async function start(){
     box.querySelectorAll("[data-crm]").forEach(b=>b.onclick=()=>{f.data.colors.splice(+b.dataset.crm,1);renderColors()});
   }
 
+  function ordersHtml(){
+    let h='<div class="panel"><div class="top" style="margin:0"><h2>Pedidos ('+S.orders.length+')</h2><button class="btn line sm" id="reload">Atualizar</button></div>';
+    if(S.ordersErr)h+='<div class="msg bad">Não consegui carregar os pedidos. Confira se as regras novas do Firestore foram publicadas (veja COMO-CONFIGURAR.md).</div>';
+    else if(!S.orders.length)h+='<p class="muted">Nenhum pedido ainda. Quando um cliente finalizar a compra na loja, ele aparece aqui.</p>';
+    S.orders.forEach((o,i)=>{
+      const c=o.customer||{},a=o.address||{},it=o.items||[],link=trackLink(o.code);
+      const date=o.createdAt?new Date(o.createdAt).toLocaleString("pt-BR",{dateStyle:"short",timeStyle:"short"}):"";
+      const msg=encodeURIComponent("Olá, "+(String(c.name||"").split(" ")[0])+"! Seu pedido "+fmtCode(o.code)+" está: "+(o.status||"")+(o.rastreio?" (rastreio: "+o.rastreio+")":"")+". Acompanhe: "+link);
+      h+='<details class="ord"'+(S.openOrder===o.code?' open':'')+' data-code="'+esc(o.code)+'"><summary><b>'+esc(fmtCode(o.code))+'</b> · '+esc(date)+' · '+esc(c.name)+' · '+brl(o.total)+' <span class="chip '+(o.status==="Aguardando pagamento"?'':'on')+'">'+esc(o.status)+'</span></summary>'+
+       '<div class="ordbody"><div><b>Cliente</b><br>'+esc(c.name)+'<br>WhatsApp: '+esc(c.tel)+' · <a href="https://wa.me/'+esc(waNum(c.tel))+'?text='+msg+'" target="_blank" rel="noopener">Enviar mensagem</a><br>E-mail: '+esc(c.mail)+'</div>'+
+       '<div><b>Entrega</b><br>'+esc(a.rua)+', '+esc(a.num)+'<br>'+esc(a.cid)+' - '+esc(a.uf)+' · CEP '+esc(a.cep)+'</div>'+
+       '<div><b>Itens</b>'+it.map(x=>'<div>'+esc(x.qty)+'× '+esc(x.name)+' <span class="muted">('+esc(x.color)+')</span> · '+brl(x.price*x.qty)+'</div>').join("")+
+       '<div class="muted" style="margin-top:6px">Subtotal '+brl(o.subtotal)+' · Frete '+brl(o.ship)+(o.disc?' · Desconto Pix −'+brl(o.disc):'')+'</div><div><b>Total '+brl(o.total)+'</b> · '+(o.pay==="pix"?"Pix":"Cartão")+'</div></div>'+
+       '<div class="two"><div class="f"><label for="os'+i+'">Status</label><select id="os'+i+'">'+STATUSES.map(t=>'<option'+(t===o.status?' selected':'')+'>'+t+'</option>').join("")+'</select></div>'+
+       '<div class="f"><label for="or'+i+'">Código de rastreio</label><input id="or'+i+'" maxlength="40" value="'+esc(o.rastreio||"")+'"></div></div>'+
+       '<div class="f"><label>Link de acompanhamento do cliente</label><input readonly value="'+esc(link)+'" onfocus="this.select()"></div>'+
+       '<div class="actions"><button class="btn sm" data-saveord="'+i+'">Salvar pedido</button></div></div></details>';
+    });
+    return h+'</div>';
+  }
+  async function saveOrder(i){
+    const o=S.orders[i],status=document.getElementById("os"+i).value,rastreio=document.getElementById("or"+i).value.trim();
+    try{
+      await FS.setDoc(FS.doc(db,"pedidos",o.code),{status,rastreio},{merge:true});
+      await FS.setDoc(FS.doc(db,"acompanhamento",o.code),{status,rastreio},{merge:true});
+      o.status=status;o.rastreio=rastreio;S.openOrder=o.code;S.msg={t:"ok",x:"Pedido "+esc(fmtCode(o.code))+" atualizado. O cliente já vê o novo status."};
+    }catch(e){S.msg={t:"bad",x:"Não foi possível atualizar o pedido ("+esc(e.code||e.message)+")."}}
+    render();
+  }
+
   function settingsHtml(){
     const s=S.settings;
     return '<form class="panel" id="sf"><h2>Configurações da loja</h2>'+
@@ -200,6 +246,8 @@ async function start(){
     q("[data-ask]").forEach(b=>b.onclick=()=>{S.confirmDel=b.dataset.ask;render()});
     q("[data-cancel]").forEach(b=>b.onclick=()=>{S.confirmDel=null;render()});
     q("[data-del]").forEach(b=>b.onclick=async()=>{try{await FS.deleteDoc(FS.doc(db,"produtos",b.dataset.del));S.products=S.products.filter(x=>x.id!==b.dataset.del);S.msg={t:"ok",x:"Bolsa excluída."}}catch(e){S.msg={t:"bad",x:"Não foi possível excluir."}}S.confirmDel=null;render()});
+    const rl=one("#reload");if(rl)rl.onclick=async()=>{await loadOrders();S.msg=null;render()};
+    q("[data-saveord]").forEach(b=>b.onclick=()=>saveOrder(+b.dataset.saveord));
     const ac=one("#addcolor");if(ac)ac.onclick=()=>{S.form.data.colors.push({name:"",hex:"#26222B"});renderColors()};
     const cn=one("#cancel");if(cn)cn.onclick=()=>{S.form=null;render()};
     const pf=one("#pf");if(pf)pf.onsubmit=async e=>{e.preventDefault();await saveProduct()};
